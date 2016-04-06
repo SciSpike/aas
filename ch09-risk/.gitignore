@@ -1,0 +1,11 @@
+.classpath
+.project
+.settings
+.cache
+target
+*.iml
+.idea
+*~
+*.bak
+.DS_Store
+*.csv

@@ -31,10 +31,12 @@ import org.joda.time.DateTime
 
 object RunRisk {
   def main(args: Array[String]): Unit = {
-    val sc = new SparkContext(new SparkConf().setAppName("VaR"))
-    val (stocksReturns, factorsReturns) = readStocksAndFactors("./")
-    plotDistribution(factorsReturns(2))
-    plotDistribution(factorsReturns(3))
+    val start = System.currentTimeMillis
+    val sc = new SparkContext(new SparkConf().setAppName("VaR").setMaster("local[*]"))
+    val basedir = (if (args.length > 0) args(0) else ".") + "/"
+    val (stocksReturns, factorsReturns) = readStocksAndFactors(basedir)
+    plotDistribution(factorsReturns(2), "Factor ^GSPC")
+    plotDistribution(factorsReturns(3), "Factor ^IXIC")
     val numTrials = 10000000
     val parallelism = 1000
     val baseSeed = 1001L
@@ -50,7 +52,9 @@ object RunRisk {
     println("VaR confidence interval: " + varConfidenceInterval)
     println("CVaR confidence interval: " + cvarConfidenceInterval)
     println("Kupiec test p-value: " + kupiecTestPValue(stocksReturns, valueAtRisk, 0.05))
-    plotDistribution(trials)
+    plotDistribution(trials, "Trial Returns")
+    val end = System.currentTimeMillis
+    println(s"Total time taken: ${(end - start)/1000/60.0} mins")
   }
 
   def computeTrialReturns(
@@ -99,7 +103,10 @@ object RunRisk {
     val end = new DateTime(2014, 10, 23, 0, 0)
 
     val rawStocks = readHistories(new File(prefix + "data/stocks/")).filter(_.size >= 260*5+10)
+    println(s"${rawStocks.length} raw stocks have been read")
+
     val stocks = rawStocks.map(trimToRegion(_, start, end)).map(fillInHistory(_, start, end))
+    println(s"${stocks.length} stocks have been region-trimmed & history-filled")
 
     val factorsPrefix = prefix + "data/factors/"
     val factors1 = Array("crudeoil.tsv", "us30yeartreasurybonds.tsv").
@@ -112,9 +119,12 @@ object RunRisk {
     val factors = (factors1 ++ factors2).
       map(trimToRegion(_, start, end)).
       map(fillInHistory(_, start, end))
+    println(s"${factors.length} factors have been region-trimmed & history-filled")
 
     val stockReturns = stocks.map(twoWeekReturns)
     val factorReturns = factors.map(twoWeekReturns)
+    println(s"two-week returns calculated")
+
     (stockReturns, factorReturns)
   }
 
@@ -232,6 +242,7 @@ object RunRisk {
   }
 
   def readInvestingDotComHistory(file: File): Array[(DateTime, Double)] = {
+    println(s"Reading Investing.com file ${file.getName}")
     val format = new SimpleDateFormat("MMM d, yyyy", Locale.ENGLISH)
     val lines = Source.fromFile(file).getLines().toSeq
     lines.map(line => {
@@ -246,6 +257,7 @@ object RunRisk {
    * Reads a history in the Yahoo format
    */
   def readYahooHistory(file: File): Array[(DateTime, Double)] = {
+    println(s"Reading Yahoo file ${file.getName}")
     val format = new SimpleDateFormat("yyyy-MM-dd", Locale.ENGLISH)
     val lines = Source.fromFile(file).getLines().toSeq
     lines.tail.map(line => {
@@ -256,7 +268,7 @@ object RunRisk {
     }).reverse.toArray
   }
 
-  def plotDistribution(samples: Array[Double]): Figure = {
+  def plotDistribution(samples: Array[Double], title:String): Figure = {
     val min = samples.min
     val max = samples.max
     // Using toList before toArray avoids a Scala bug
@@ -267,10 +279,11 @@ object RunRisk {
     p += plot(domain, densities)
     p.xlabel = "Two Week Return ($)"
     p.ylabel = "Density"
+    p.title = title
     f
   }
 
-  def plotDistribution(samples: RDD[Double]): Figure = {
+  def plotDistribution(samples: RDD[Double], title:String): Figure = {
     val stats = samples.stats()
     val min = stats.min
     val max = stats.max
@@ -282,6 +295,7 @@ object RunRisk {
     p += plot(domain, densities)
     p.xlabel = "Two Week Return ($)"
     p.ylabel = "Density"
+    p.title = title
     f
   }
 
