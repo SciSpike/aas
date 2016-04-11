@@ -2,6 +2,7 @@
 .project
 .settings
 .cache
+.cache-main
 target
 *.iml
 .idea
@@ -9,3 +10,5 @@ target
 *.bak
 .DS_Store
 *.csv
+.symbols.txt.*
+spark.log

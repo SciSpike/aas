@@ -35,8 +35,8 @@ object RunRisk {
     val sc = new SparkContext(new SparkConf().setAppName("VaR").setMaster("local[*]"))
     val basedir = (if (args.length > 0) args(0) else ".") + "/"
     val (stocksReturns, factorsReturns) = readStocksAndFactors(basedir)
-    plotDistribution(factorsReturns(2), "Factor ^GSPC")
-    plotDistribution(factorsReturns(3), "Factor ^IXIC")
+    plotDistribution(factorsReturns(2), "S&P 500 Historical Returns")
+    plotDistribution(factorsReturns(3), "NASDAQ Composite Historical Returns")
     val numTrials = 10000000
     val parallelism = 1000
     val baseSeed = 1001L
@@ -55,6 +55,7 @@ object RunRisk {
     plotDistribution(trials, "Trial Returns")
     val end = System.currentTimeMillis
     println(s"Total time taken: ${(end - start)/1000/60.0} mins")
+    sc.stop()
   }
 
   def computeTrialReturns(
@@ -64,27 +65,35 @@ object RunRisk {
       baseSeed: Long,
       numTrials: Int,
       parallelism: Int): RDD[Double] = {
+    // convert factor returns to matrix of Doubles (Array[Array[Double]])
     val factorMat = factorMatrix(factorsReturns)
+    // use matrix to calculate Covariance matrix
     val factorCov = new Covariance(factorMat).getCovarianceMatrix().getData()
+    // calculate means of returns for each factor
     val factorMeans = factorsReturns.map(factor => factor.sum / factor.size).toArray
+    // featurize factor returns:
+      // signed squares of each feature return,
+      // signed square roots of each feature return, and
+      // feature returns themselves
     val factorFeatures = factorMat.map(featurize)
+    // calculate factor weights for each stock
     val factorWeights = computeFactorWeights(stocksReturns, factorFeatures)
-
+    // share weights across Spark cluster
     val bInstruments = sc.broadcast(factorWeights)
-
-    // Generate different seeds so that our simulations don't all end up with the same results
-    val seeds = (baseSeed until baseSeed + parallelism)
+    // generate different seeds so that our trials don't all end up with the same results
+    val seeds = baseSeed until baseSeed + parallelism
     val seedRdd = sc.parallelize(seeds, parallelism)
-
-    // Main computation: run simulations and compute aggregate return for each
-    seedRdd.flatMap(
-      trialReturns(_, numTrials / parallelism, bInstruments.value, factorMeans, factorCov))
+    // main computation: run simulations and compute aggregate return for each
+    seedRdd.flatMap(seed =>
+      trialReturns(seed, numTrials / parallelism, bInstruments.value, factorMeans, factorCov))
   }
 
   def computeFactorWeights(
       stocksReturns: Seq[Array[Double]],
       factorFeatures: Array[Array[Double]]): Array[Array[Double]] = {
+    // calculate multivariate linear regression for each stock
     val models = stocksReturns.map(linearModel(_, factorFeatures))
+    // calculate factor weights for each stock using stock's linear regression model
     val factorWeights = Array.ofDim[Double](stocksReturns.length, factorFeatures.head.length+1)
     for (s <- 0 until stocksReturns.length) {
       factorWeights(s) = models(s).estimateRegressionParameters()
@@ -93,34 +102,38 @@ object RunRisk {
   }
 
   def featurize(factorReturns: Array[Double]): Array[Double] = {
-    val squaredReturns = factorReturns.map(x => math.signum(x) * x * x)
-    val squareRootedReturns = factorReturns.map(x => math.signum(x) * math.sqrt(math.abs(x)))
-    squaredReturns ++ squareRootedReturns ++ factorReturns
+    // given returns of a factor, prepend signed squares & square roots
+    val signedSquares = factorReturns.map(x => math.signum(x) * x * x)
+    val signedSquareRoots = factorReturns.map(x => math.signum(x) * math.sqrt(math.abs(x)))
+    signedSquares ++ signedSquareRoots ++ factorReturns
   }
 
   def readStocksAndFactors(prefix: String): (Seq[Array[Double]], Seq[Array[Double]]) = {
     val start = new DateTime(2009, 10, 23, 0, 0)
     val end = new DateTime(2014, 10, 23, 0, 0)
 
-    val rawStocks = readHistories(new File(prefix + "data/stocks/")).filter(_.size >= 260*5+10)
+    val rawStocks = readHistories(new File(prefix + "data/stocks/"))
+      // keep only those stocks with 5 years + 2 weeks of history
+      .filter(_.size >= 52*5*5+10)
     println(s"${rawStocks.length} raw stocks have been read")
-
-    val stocks = rawStocks.map(trimToRegion(_, start, end)).map(fillInHistory(_, start, end))
+    // trim dates & fill histories for stocks
+    val stocks = rawStocks
+      .map(trimToRegion(_, start, end))
+      .map(fillInHistory(_, start, end))
     println(s"${stocks.length} stocks have been region-trimmed & history-filled")
-
+    // trim dates & fill histories for factors
     val factorsPrefix = prefix + "data/factors/"
-    val factors1 = Array("crudeoil.tsv", "us30yeartreasurybonds.tsv").
+    val oilAndBonds = Array("crudeoil.tsv", "us30yeartreasurybonds.tsv").
       map(x => new File(factorsPrefix + x)).
       map(readInvestingDotComHistory)
-    val factors2 = Array("^GSPC.csv", "^IXIC.csv").
+    val sp500AndNasdaq = Array("^GSPC.csv", "^IXIC.csv").
       map(x => new File(factorsPrefix + x)).
       map(readYahooHistory)
-
-    val factors = (factors1 ++ factors2).
+    val factors = (oilAndBonds ++ sp500AndNasdaq).
       map(trimToRegion(_, start, end)).
       map(fillInHistory(_, start, end))
     println(s"${factors.length} factors have been region-trimmed & history-filled")
-
+    // calculate 2-week returns
     val stockReturns = stocks.map(twoWeekReturns)
     val factorReturns = factors.map(twoWeekReturns)
     println(s"two-week returns calculated")
@@ -134,10 +147,12 @@ object RunRisk {
       instruments: Seq[Array[Double]],
       factorMeans: Array[Double],
       factorCovariances: Array[Array[Double]]): Seq[Double] = {
+    // new RNG from seed
     val rand = new MersenneTwister(seed)
+    // calculate multivariate normal distribution
     val multivariateNormal = new MultivariateNormalDistribution(rand, factorMeans,
       factorCovariances)
-
+    // calculate returns from random sample
     val trialReturns = new Array[Double](numTrials)
     for (i <- 0 until numTrials) {
       val trialFactorReturns = multivariateNormal.sample()
@@ -172,9 +187,14 @@ object RunRisk {
   }
 
   def twoWeekReturns(history: Array[(DateTime, Double)]): Array[Double] = {
-    history.sliding(10).map { window =>
+    // returns collection of arrays based on 2-week (10-day) windows
+    history.sliding(10)
+      .map { window => // for each 2-week window
+      // change is close at end of current window
       val next = window.last._2
+      // basis is close at end of previous window
       val prev = window.head._2
+      // calculate return as % change from previous
       (next - prev) / prev
     }.toArray
   }
@@ -200,18 +220,23 @@ object RunRisk {
       try {
         Some(readYahooHistory(file))
       } catch {
-        case e: Exception => None
+        case _: Exception => None
       }
     })
   }
 
   def trimToRegion(history: Array[(DateTime, Double)], start: DateTime, end: DateTime)
   : Array[(DateTime, Double)] = {
+    // keep data in desired date range only
     var trimmed = history.dropWhile(_._1 < start).takeWhile(_._1 <= end)
-    if (trimmed.head._1 != start) {
+    // if first element's date not desired start
+    if (trimmed.head._1 != start) { 
+      // prepend entry for start using current head's price
       trimmed = Array((start, trimmed.head._2)) ++ trimmed
     }
+    // if last element's date not desired end
     if (trimmed.last._1 != end) {
+      // append entry for end using current end's price
       trimmed = trimmed ++ Array((end, trimmed.last._2))
     }
     trimmed
@@ -231,11 +256,9 @@ object RunRisk {
       if (cur.tail.nonEmpty && cur.tail.head._1 == curDate) {
         cur = cur.tail
       }
-
       filled += ((curDate, cur.head._2))
-
       curDate += 1.days
-      // Skip weekends
+      // skip weekends
       if (curDate.dayOfWeek().get > 5) curDate += 2.days
     }
     filled.toArray
@@ -249,7 +272,7 @@ object RunRisk {
       val cols = line.split('\t')
       val date = new DateTime(format.parse(cols(0)))
       val value = cols(1).toDouble
-      (date, value)
+      (date, value) // maps each line to a tuple
     }).reverse.toArray
   }
 
@@ -260,11 +283,11 @@ object RunRisk {
     println(s"Reading Yahoo file ${file.getName}")
     val format = new SimpleDateFormat("yyyy-MM-dd", Locale.ENGLISH)
     val lines = Source.fromFile(file).getLines().toSeq
-    lines.tail.map(line => {
+    lines.tail.map(line => { // tail skips header row
       val cols = line.split(',')
       val date = new DateTime(format.parse(cols(0)))
       val value = cols(1).toDouble
-      (date, value)
+      (date, value) // maps each line to a tuple
     }).reverse.toArray
   }
 
@@ -301,12 +324,12 @@ object RunRisk {
 
   def fivePercentVaR(trials: RDD[Double]): Double = {
     val topLosses = trials.takeOrdered(math.max(trials.count().toInt / 20, 1))
-    topLosses.last
+    topLosses.last // 5th worst loss
   }
 
   def fivePercentCVaR(trials: RDD[Double]): Double = {
     val topLosses = trials.takeOrdered(math.max(trials.count().toInt / 20, 1))
-    topLosses.sum / topLosses.length
+    topLosses.sum / topLosses.length // average of 5 worst losses
   }
 
   def bootstrappedConfidenceInterval(
@@ -314,20 +337,23 @@ object RunRisk {
       computeStatistic: RDD[Double] => Double,
       numResamples: Int,
       pValue: Double): (Double, Double) = {
+    // for each sample, call compute function
     val stats = (0 until numResamples).map { i =>
       val resample = trials.sample(true, 1.0)
       computeStatistic(resample)
     }.sorted
+    // take subset of samples based on p-value
     val lowerIndex = (numResamples * pValue / 2 - 1).toInt
     val upperIndex = math.ceil(numResamples * (1 - pValue / 2)).toInt
+    // return interval
     (stats(lowerIndex), stats(upperIndex))
   }
 
   def countFailures(stocksReturns: Seq[Array[Double]], valueAtRisk: Double): Int = {
     var failures = 0
     for (i <- 0 until stocksReturns(0).size) {
-      val loss = stocksReturns.map(_(i)).sum
-      if (loss < valueAtRisk) {
+      val ret = stocksReturns.map(_(i)).sum
+      if (ret < valueAtRisk) {
         failures += 1
       }
     }

@@ -2,7 +2,7 @@
 
 for x in mvn spark-submit ; do
     if [ -z `which $x` ]; then
-      echo "$x must on on the path"
+      echo "$x must be on the path"
       exit 1
     fi
 done
@@ -11,4 +11,4 @@ done
 
 mvn clean package
 
-spark-submit --class com.cloudera.datascience.risk.RunRisk target/ch09-risk-1.0.2-jar-with-dependencies.jar .
+spark-submit  --class com.cloudera.datascience.risk.RunRisk target/ch09-risk-1.0.2-jar-with-dependencies.jar .

@@ -436,9 +436,6 @@
       </properties>
     </profile>
     <profile>
-      <activation>
-        <activeByDefault>true</activeByDefault>
-      </activation>
       <id>spark-1.5</id>
       <properties>
         <spark.version>1.5.2</spark.version>
@@ -446,8 +443,11 @@
     </profile>
     <profile>
       <id>spark-1.6</id>
+      <activation>
+        <activeByDefault>true</activeByDefault>
+      </activation>
       <properties>
-        <spark.version>1.6.0</spark.version>
+        <spark.version>1.6.1</spark.version>
       </properties>
     </profile>
     <profile>
@@ -460,13 +460,20 @@
       </properties>
     </profile>
     <profile>
-      <id>scala-2.11</id>
+      <id>scala-2.10</id>
       <activation>
         <activeByDefault>true</activeByDefault>
       </activation>
       <properties>
+        <scala.minor.version>2.10</scala.minor.version>
+        <scala.complete.version>${scala.minor.version}.6</scala.complete.version>
+      </properties>
+    </profile>
+    <profile>
+      <id>scala-2.11</id>
+      <properties>
         <scala.minor.version>2.11</scala.minor.version>
-        <scala.complete.version>${scala.minor.version}.7</scala.complete.version>
+        <scala.complete.version>${scala.minor.version}.8</scala.complete.version>
       </properties>
     </profile>
   </profiles>
