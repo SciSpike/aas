@@ -22,16 +22,21 @@ TOTAL=$(wc -l < symbols.txt) # get count of symbols
 TOTAL=$(echo -n $TOTAL | xargs) # strip spaces
 SIZE=25
 COUNT=0
+SYMBOL_FILTER_REGEX=^.*$ # everything by default; change this to read only symbols that match the regex, like ^AA.*$, for all stocks that begin with "AA"
+
 split -l $SIZE symbols.txt $CHUNK_PREFIX # parallelize downloads for speed, else it takes a loooooooooong time
 
 for CHUNK in $(find . -type f -name "$CHUNK_PREFIX*"); do
     PIDS=
     for SYMBOL in $(cat "$CHUNK"); do
-        FILE="stocks/$SYMBOL.csv"
-        COUNT=$(expr $COUNT + 1)
-        if [ ! -s "$FILE" ]; then
-            curl -sSL --create-dirs -o "$FILE" "http://ichart.yahoo.com/table.csv?s=$SYMBOL&a=0&b=1&c=2000&d=0&e=31&f=2013&g=d&ignore=.csv" &
-            PIDS="$PIDS $!" # store process id of last curl job
+        if [[ $SYMBOL =~ $SYMBOL_FILTER_REGEX ]]; then
+          echo Fetching data for symbol $SYMBOL
+          FILE="stocks/$SYMBOL.csv"
+          COUNT=$(expr $COUNT + 1)
+          if [ ! -s "$FILE" ]; then
+              curl -sSL --create-dirs -o "$FILE" "http://ichart.yahoo.com/table.csv?s=$SYMBOL&a=0&b=1&c=2000&d=0&e=31&f=2013&g=d&ignore=.csv" &
+              PIDS="$PIDS $!" # store process id of last curl job
+          fi
         fi
     done
     # ensure no more than SIZE curl jobs are running at once by waiting for them all to finish
